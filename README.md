@@ -1,0 +1,2 @@
+# EZGrader
+TCG Card Grader
