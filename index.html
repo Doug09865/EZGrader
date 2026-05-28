@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CardGrader AI — Free Trading Card Grade Estimator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.16.3/ort.min.js"></script>
+<style>
+  /* ------------------------------------------------------------------ */
+  /* Design: Dark industrial / trading card binder aesthetic             */
+  /* Monospace accents, bold data display, collector-tool feel           */
+  /* ------------------------------------------------------------------ */
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
+
+  :root {
+    --bg:          #0d0d0f;
+    --surface:     #16161a;
+    --surface2:    #1e1e24;
+    --border:      #2a2a35;
+    --accent:      #e8c547;    /* gold — like a PSA label */
+    --accent2:     #4a9eff;    /* blue — holographic */
+    --danger:      #ff4757;
+    --success:     #2ed573;
+    --text:        #e8e8f0;
+    --text-muted:  #7a7a8a;
+    --font-head:   'Bebas Neue', sans-serif;
+    --font-mono:   'IBM Plex Mono', monospace;
+    --font-body:   'IBM Plex Sans', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ---- Noise texture overlay ---- */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.4;
+  }
+
+  /* ---- Header ---- */
+  header {
+    position: relative;
+    z-index: 1;
+    padding: 2rem 2rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 1.5rem;
+  }
+
+  .logo {
+    font-family: var(--font-head);
+    font-size: clamp(2.4rem, 5vw, 3.8rem);
+    letter-spacing: 0.05em;
+    line-height: 1;
+    background: linear-gradient(135deg, var(--accent) 0%, #fff8d6 50%, var(--accent) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .logo-sub {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+
+  .badge {
+    margin-left: auto;
+    background: #1a2a1a;
+    border: 1px solid var(--success);
+    color: var(--success);
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.15em;
+    padding: 0.25rem 0.6rem;
+    border-radius: 3px;
+    text-transform: uppercase;
+  }
+
+  /* ---- Main layout ---- */
+  main {
+    position: relative;
+    z-index: 1;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+  }
+
+  @media (max-width: 700px) {
+    main { grid-template-columns: 1fr; }
+    header { flex-wrap: wrap; }
+  }
+
+  /* ---- Panel ---- */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    padding: 0.7rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .panel-title {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .panel-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .panel-body { padding: 1.2rem; }
+
+  /* ---- Upload zone ---- */
+  #drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 4px;
+    padding: 2.5rem 1rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    position: relative;
+  }
+
+  #drop-zone:hover,
+  #drop-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(232, 197, 71, 0.04);
+  }
+
+  #drop-zone input[type=file] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .upload-icon {
+    font-size: 2.5rem;
+    margin-bottom: 0.5rem;
+    display: block;
+  }
+
+  .upload-label {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    letter-spacing: 0.1em;
+  }
+
+  .upload-label strong { color: var(--accent); }
+
+  /* ---- Preview ---- */
+  #card-preview {
+    display: none;
+    margin-top: 1rem;
+    text-align: center;
+  }
+
+  #card-preview img {
+    max-width: 100%;
+    max-height: 260px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    object-fit: contain;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+
+  /* ---- Scale selector ---- */
+  .scale-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .scale-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    padding: 0.5rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s;
+    text-align: center;
+  }
+
+  .scale-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(232, 197, 71, 0.08);
+  }
+
+  /* ---- Price input ---- */
+  .input-group { margin-bottom: 1rem; }
+
+  .input-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 0.4rem;
+  }
+
+  .input-row {
+    display: flex;
+    align-items: center;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .input-prefix {
+    padding: 0 0.7rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .input-row input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    padding: 0.55rem 0.7rem;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+  }
+
+  /* ---- Grade button ---- */
+  #grade-btn {
+    width: 100%;
+    background: var(--accent);
+    color: #0d0d0f;
+    border: none;
+    border-radius: 4px;
+    font-family: var(--font-head);
+    font-size: 1.3rem;
+    letter-spacing: 0.15em;
+    padding: 0.65rem 1rem;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+
+  #grade-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+  #grade-btn:active { transform: translateY(0); }
+  #grade-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+  /* ---- Results panel ---- */
+  #results { display: none; grid-column: 1 / -1; }
+
+  /* ---- Sub-score bars ---- */
+  .score-bars { margin-bottom: 1.5rem; }
+
+  .score-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .score-label {
+    width: 80px;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+
+  .score-bar-track {
+    flex: 1;
+    height: 8px;
+    background: var(--surface2);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .score-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.8s cubic-bezier(0.25, 1, 0.5, 1);
+    width: 0%;
+  }
+
+  .score-value {
+    width: 32px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ---- Grade display cards ---- */
+  .grades-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+  }
+
+  @media (max-width: 600px) {
+    .grades-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .grade-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.9rem 0.7rem;
+    text-align: center;
+    transition: border-color 0.3s;
+  }
+
+  .grade-card.active-scale {
+    border-color: var(--accent);
+    box-shadow: 0 0 12px rgba(232, 197, 71, 0.15);
+  }
+
+  .grade-company {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    margin-bottom: 0.3rem;
+  }
+
+  .grade-value {
+    font-family: var(--font-head);
+    font-size: 2rem;
+    line-height: 1;
+    color: var(--accent);
+  }
+
+  .grade-label {
+    font-family: var(--font-body);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+  }
+
+  /* ---- Value estimate ---- */
+  .value-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+  }
+
+  .value-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.9rem;
+  }
+
+  .value-label {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+  }
+
+  .value-amount {
+    font-family: var(--font-mono);
+    font-size: 1.3rem;
+    font-weight: 600;
+  }
+
+  .value-amount.positive { color: var(--success); }
+  .value-amount.negative { color: var(--danger); }
+  .value-amount.neutral  { color: var(--text); }
+
+  .value-sub {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-top: 0.2rem;
+  }
+
+  /* ---- Status / loading ---- */
+  .status-bar {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    padding: 0.5rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- Model not loaded notice ---- */
+  .notice {
+    background: rgba(74, 158, 255, 0.08);
+    border: 1px solid rgba(74, 158, 255, 0.3);
+    border-radius: 4px;
+    padding: 0.9rem;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: #a8c8ff;
+    margin-bottom: 1rem;
+  }
+
+  .notice a { color: var(--accent2); }
+
+  /* ---- Footer ---- */
+  footer {
+    position: relative; z-index: 1;
+    text-align: center;
+    padding: 1.5rem;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    letter-spacing: 0.1em;
+  }
+
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="logo">CardGrader AI</div>
+    <div class="logo-sub">Open-source · Runs in your browser · No data uploaded</div>
+  </div>
+  <div class="badge">Free &amp; Open Source</div>
+</header>
+
+<main>
+
+  <!-- Left panel: Upload -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-dot"></div>
+      <span class="panel-title">Card Image</span>
+    </div>
+    <div class="panel-body">
+
+      <div class="notice" id="model-notice">
+        ⚡ <strong>Model not loaded.</strong> To enable AI grading, train the model and export
+        <code>card_grader.onnx</code> to this directory, then reload.
+        See <a href="https://github.com/your-username/card-grader" target="_blank">the README</a> for setup.
+        <br><br>
+        The app will run in <strong>demo mode</strong> with simulated grades until the model is available.
+      </div>
+
+      <div id="drop-zone">
+        <input type="file" id="file-input" accept="image/*">
+        <span class="upload-icon">🃏</span>
+        <div class="upload-label"><strong>Drop card photo here</strong> or click to browse</div>
+        <div class="upload-label" style="margin-top:0.3rem; font-size:0.65rem;">JPG, PNG — front of unslabbed card recommended</div>
+      </div>
+
+      <div id="card-preview">
+        <img id="preview-img" src="" alt="Card preview">
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Right panel: Settings -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-dot" style="background: var(--accent2)"></div>
+      <span class="panel-title">Grading Settings</span>
+    </div>
+    <div class="panel-body">
+
+      <div class="input-group">
+        <label class="input-label">Primary Grading Scale</label>
+        <div class="scale-grid">
+          <button class="scale-btn active" data-scale="PSA">PSA</button>
+          <button class="scale-btn" data-scale="BGS">Beckett (BGS)</button>
+          <button class="scale-btn" data-scale="SGC">SGC</button>
+          <button class="scale-btn" data-scale="CGC">CGC</button>
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label class="input-label" for="raw-price">Current Raw (Ungraded) Value</label>
+        <div class="input-row">
+          <span class="input-prefix">$</span>
+          <input type="number" id="raw-price" min="0" step="0.01" value="20.00" placeholder="0.00">
+        </div>
+      </div>
+
+      <div id="status-area" class="status-bar" style="margin-bottom: 0.75rem; display:none;">
+        <span class="spinner"></span>
+        <span id="status-text">Analyzing card...</span>
+      </div>
+
+      <button id="grade-btn" disabled>GRADE THIS CARD</button>
+
+    </div>
+  </div>
+
+  <!-- Results panel (full width, hidden until graded) -->
+  <div class="panel" id="results">
+    <div class="panel-header">
+      <div class="panel-dot" style="background: var(--success)"></div>
+      <span class="panel-title">Grade Estimate</span>
+      <span id="result-timestamp" style="margin-left:auto; font-family: var(--font-mono); font-size:0.6rem; color: var(--text-muted);"></span>
+    </div>
+    <div class="panel-body">
+
+      <!-- Sub-scores -->
+      <div class="score-bars" id="score-bars"></div>
+
+      <!-- Grade cards -->
+      <div class="grades-grid" id="grades-grid"></div>
+
+      <!-- Value estimate -->
+      <div class="panel-header" style="margin: 0 -1.2rem 1rem; padding: 0.5rem 1.2rem;">
+        <span class="panel-title">Value Estimate (based on raw price + grade)</span>
+      </div>
+      <div class="value-grid" id="value-grid"></div>
+
+      <div style="margin-top: 1rem; font-size: 0.7rem; color: var(--text-muted); font-family: var(--font-mono); line-height: 1.5;">
+        ⚠ Estimates only. Actual grades may vary. Market prices fluctuate. Always verify with current sold listings before submitting for grading.
+      </div>
+
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  CardGrader AI — Open source project · Runs entirely in your browser · No images are uploaded anywhere
+  &nbsp;·&nbsp; <a href="https://github.com/your-username/card-grader" target="_blank">GitHub</a>
+  &nbsp;·&nbsp; <a href="https://github.com/your-username/card-grader/issues" target="_blank">Report Issue</a>
+</footer>
+
+<script>
+// ============================================================
+// CardGrader AI — Browser-side inference with ONNX Runtime Web
+// ============================================================
+
+const IMG_SIZE = 224;   // Must match training configuration
+let   ort_session = null;
+let   selected_scale = 'PSA';
+let   current_image_data = null;
+
+// -------- Grade mapping tables (mirrors grade_mapping.py) --------
+const GRADE_WEIGHTS = { centering: 0.20, corners: 0.25, edges: 0.25, surface: 0.30 };
+
+function computeComposite(scores) {
+  return Object.keys(GRADE_WEIGHTS).reduce((sum, k) => sum + scores[k] * GRADE_WEIGHTS[k], 0);
+}
+
+const PSA_THRESHOLDS = [
+  [9.75, '10', 'Gem Mint'],
+  [9.40, '9',  'Mint'],
+  [8.75, '8',  'NM-MT'],
+  [8.00, '7',  'NM'],
+  [7.25, '6',  'EX-MT'],
+  [6.50, '5',  'EX'],
+  [5.50, '4',  'VG-EX'],
+  [4.50, '3',  'VG'],
+  [3.00, '2',  'GOOD'],
+  [0.00, '1',  'Poor'],
+];
+
+const BGS_THRESHOLDS = [
+  [9.90, '10', 'Pristine'],
+  [9.60, '9.5','Gem Mint'],
+  [9.20, '9',  'Mint'],
+  [8.70, '8.5','NM-MT+'],
+  [8.20, '8',  'NM-MT'],
+  [7.70, '7.5','NM+'],
+  [7.20, '7',  'NM'],
+  [6.20, '6',  'EX-MT'],
+  [0.00, '5',  'EX'],
+];
+
+const SGC_THRESHOLDS = [
+  [9.80, '10',  'Pristine'],
+  [9.50, '9.5', 'Mint+'],
+  [9.20, '9',   'Mint'],
+  [8.80, '8.5', 'NM-MT+'],
+  [8.40, '8',   'NM-MT'],
+  [7.80, '7.5', 'NM+'],
+  [7.20, '7',   'NM'],
+  [6.00, '6',   'EX-MT'],
+  [0.00, '5',   'EX'],
+];
+
+const CGC_THRESHOLDS = [
+  [9.80, '10',  'Pristine'],
+  [9.50, '9.5', 'Gem Mint'],
+  [9.10, '9',   'Mint'],
+  [8.60, '8.5', 'NM/MT+'],
+  [8.10, '8',   'NM/MT'],
+  [7.10, '7',   'NM'],
+  [6.10, '6',   'EX/NM'],
+  [0.00, '5',   'EX'],
+];
+
+function getGrade(thresholds, composite) {
+  for (const [min, num, label] of thresholds) {
+    if (composite >= min) return { num, label };
+  }
+  return { num: '1', label: 'Poor' };
+}
+
+function allGrades(scores) {
+  const c = computeComposite(scores);
+  // Special BGS Black Label
+  const allHigh = Object.values(scores).every(v => v >= 9.5);
+  const bgsGrade = allHigh
+    ? { num: '10', label: 'Black Label' }
+    : getGrade(BGS_THRESHOLDS, c);
+
+  return {
+    composite: c,
+    PSA:     getGrade(PSA_THRESHOLDS, c),
+    BGS:     bgsGrade,
+    SGC:     getGrade(SGC_THRESHOLDS, c),
+    CGC:     getGrade(CGC_THRESHOLDS, c),
+  };
+}
+
+// -------- Value estimation --------
+const PSA_MULTIPLIERS = {
+  '10': 5.0, '9': 2.0, '8': 1.3, '7': 1.0, '6': 0.8, '5': 0.6
+};
+const GRADING_COSTS = { PSA: 25, BGS: 22, SGC: 20, CGC: 25 };
+
+function estimateValue(grades, rawPrice, scale) {
+  const grade      = grades[scale === 'Beckett (BGS)' ? 'BGS' : scale];
+  const mult       = PSA_MULTIPLIERS[grade.num] || 1.0;
+  const fee        = GRADING_COSTS[scale] || 25;
+  const graded     = rawPrice * mult;
+  const net        = graded - rawPrice - fee;
+  const roi        = rawPrice > 0 ? (net / (rawPrice + fee)) * 100 : 0;
+  return { graded: graded.toFixed(2), net: net.toFixed(2), roi: roi.toFixed(1), fee };
+}
+
+// -------- ONNX model loading --------
+async function loadModel() {
+  try {
+    setStatus('Loading AI model...');
+    ort_session = await ort.InferenceSession.create('./card_grader.onnx');
+    document.getElementById('model-notice').style.display = 'none';
+    setStatus('');
+    console.log('ONNX model loaded ✅');
+  } catch (e) {
+    console.log('No ONNX model found — running in demo mode.');
+    ort_session = null;
+    setStatus('');
+  }
+}
+
+// -------- Image preprocessing --------
+async function preprocessImage(imgElement) {
+  const canvas = document.createElement('canvas');
+  canvas.width  = IMG_SIZE;
+  canvas.height = IMG_SIZE;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(imgElement, 0, 0, IMG_SIZE, IMG_SIZE);
+
+  const imageData = ctx.getImageData(0, 0, IMG_SIZE, IMG_SIZE);
+  const data      = imageData.data;
+  const float32   = new Float32Array(IMG_SIZE * IMG_SIZE * 3);
+
+  // Convert RGBA → RGB normalized float32 [0,1]
+  // ONNX Runtime Web expects NHWC format: [1, H, W, 3]
+  for (let i = 0; i < IMG_SIZE * IMG_SIZE; i++) {
+    float32[i * 3 + 0] = data[i * 4 + 0] / 255;  // R
+    float32[i * 3 + 1] = data[i * 4 + 1] / 255;  // G
+    float32[i * 3 + 2] = data[i * 4 + 2] / 255;  // B
+  }
+
+  return new ort.Tensor('float32', float32, [1, IMG_SIZE, IMG_SIZE, 3]);
+}
+
+// -------- Inference --------
+async function runInference(imgElement) {
+  if (!ort_session) {
+    // Demo mode — return plausible random scores
+    return {
+      centering: 7.5 + Math.random() * 2.5,
+      corners:   7.5 + Math.random() * 2.5,
+      edges:     7.5 + Math.random() * 2.5,
+      surface:   7.0 + Math.random() * 3.0,
+    };
+  }
+
+  const tensor = await preprocessImage(imgElement);
+  const feeds  = { card_image: tensor };
+  const result = await ort_session.run(feeds);
+
+  // Output: shape [1, 4] — [centering, corners, edges, surface] in [0,1]
+  const output = result[Object.keys(result)[0]].data;
+  return {
+    centering: parseFloat((output[0] * 10).toFixed(2)),
+    corners:   parseFloat((output[1] * 10).toFixed(2)),
+    edges:     parseFloat((output[2] * 10).toFixed(2)),
+    surface:   parseFloat((output[3] * 10).toFixed(2)),
+  };
+}
+
+// -------- Render results --------
+function renderResults(scores, grades, rawPrice) {
+  const results = document.getElementById('results');
+  results.style.display = 'block';
+
+  // Timestamp
+  document.getElementById('result-timestamp').textContent =
+    new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+  // Sub-score bars
+  const barsHtml = Object.entries(scores).map(([dim, score]) => {
+    const pct    = (score / 10 * 100).toFixed(1);
+    const color  = score >= 9 ? '#2ed573' : score >= 7.5 ? '#e8c547' : '#ff4757';
+    return `
+      <div class="score-row">
+        <span class="score-label">${dim}</span>
+        <div class="score-bar-track">
+          <div class="score-bar-fill" style="width:${pct}%; background:${color}"></div>
+        </div>
+        <span class="score-value" style="color:${color}">${score.toFixed(1)}</span>
+      </div>`;
+  }).join('');
+  document.getElementById('score-bars').innerHTML = barsHtml;
+
+  // Grade cards
+  const scaleMap = [
+    ['PSA', grades.PSA],
+    ['BGS', grades.BGS],
+    ['SGC', grades.SGC],
+    ['CGC', grades.CGC],
+  ];
+  const gradesHtml = scaleMap.map(([name, g]) => `
+    <div class="grade-card ${name === selected_scale || (selected_scale === 'Beckett (BGS)' && name === 'BGS') ? 'active-scale' : ''}">
+      <div class="grade-company">${name}</div>
+      <div class="grade-value">${g.num}</div>
+      <div class="grade-label">${g.label}</div>
+    </div>`).join('');
+  document.getElementById('grades-grid').innerHTML = gradesHtml;
+
+  // Value estimate
+  const val = estimateValue(grades, rawPrice, selected_scale === 'Beckett (BGS)' ? 'BGS' : selected_scale);
+  const netClass = parseFloat(val.net) > 0 ? 'positive' : 'negative';
+  document.getElementById('value-grid').innerHTML = `
+    <div class="value-card">
+      <div class="value-label">Estimated Graded Value</div>
+      <div class="value-amount neutral">$${val.graded}</div>
+      <div class="value-sub">Based on ${selected_scale} ${grades[selected_scale === 'Beckett (BGS)' ? 'BGS' : selected_scale].num} multiplier</div>
+    </div>
+    <div class="value-card">
+      <div class="value-label">Grading Fee (${selected_scale})</div>
+      <div class="value-amount neutral">$${val.fee}</div>
+      <div class="value-sub">Standard service estimate</div>
+    </div>
+    <div class="value-card">
+      <div class="value-label">Est. Net Gain / Loss</div>
+      <div class="value-amount ${netClass}">${parseFloat(val.net) >= 0 ? '+' : ''}$${val.net}</div>
+      <div class="value-sub">ROI: ${val.roi}%</div>
+    </div>`;
+
+  results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// -------- UI helpers --------
+function setStatus(msg) {
+  const area = document.getElementById('status-area');
+  const text = document.getElementById('status-text');
+  if (msg) {
+    area.style.display = 'flex';
+    text.textContent = msg;
+  } else {
+    area.style.display = 'none';
+  }
+}
+
+// -------- Event handlers --------
+function handleFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = document.getElementById('preview-img');
+    img.src = e.target.result;
+    img.onload = () => {
+      current_image_data = img;
+      document.getElementById('card-preview').style.display = 'block';
+      document.getElementById('grade-btn').disabled = false;
+    };
+  };
+  reader.readAsDataURL(file);
+}
+
+document.getElementById('file-input').addEventListener('change', (e) => {
+  handleFile(e.target.files[0]);
+});
+
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover',  (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  handleFile(e.dataTransfer.files[0]);
+});
+
+document.querySelectorAll('.scale-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.scale-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selected_scale = btn.dataset.scale;
+  });
+});
+
+document.getElementById('grade-btn').addEventListener('click', async () => {
+  if (!current_image_data) return;
+
+  const btn      = document.getElementById('grade-btn');
+  const rawPrice = parseFloat(document.getElementById('raw-price').value) || 0;
+
+  btn.disabled = true;
+  setStatus(ort_session ? 'Running AI analysis...' : 'Running demo analysis...');
+
+  try {
+    const scores = await runInference(current_image_data);
+    const grades = allGrades(scores);
+    renderResults(scores, grades, rawPrice);
+  } catch (err) {
+    console.error('Inference error:', err);
+    setStatus('Error during analysis — see console.');
+  } finally {
+    btn.disabled = false;
+    setStatus('');
+  }
+});
+
+// -------- Init --------
+loadModel();
+</script>
+</body>
+</html>
